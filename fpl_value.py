@@ -60,7 +60,7 @@ subset_df = slim_elements_df
 
 all_history_df.loc[:,('player')] = all_history_df.element.map(elements_df.set_index('id').first_name) + " " + all_history_df.element.map(elements_df.set_index('id').second_name)
 
-players_list = all_history_df.groupby('player', sort=False)['player', 'total_points'].sum().reset_index()
+players_list = all_history_df.groupby('player', sort=False)[['player', 'total_points']].sum().reset_index(drop=True)
 players_list = players_list.sort_values(['total_points'], ascending=False)
 players_list = players_list['player'].tolist()
 
