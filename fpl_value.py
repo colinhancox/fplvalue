@@ -131,6 +131,18 @@ if len(select_team) > 0:
 if select_position != 'All':
    dynamic_table = dynamic_table[dynamic_table['position'] == select_position]    
 
+st.subheader("Player Comparison")
+st.write("Select the X axis, Y axis and Size in the sidebar.")
+scatter_chart3 = st.altair_chart(
+        alt.Chart(dynamic_table).mark_circle(size=160).encode(
+            x=alt.X(x_axis,scale=alt.Scale(zero=False)),
+            y=y_axis,
+            color=select_colour,
+            size=size_axis,
+            tooltip=['player', 'price', 'total_points', 'total_value']
+        ).interactive().properties(width=1000,height=400)
+)
+
 st.subheader("Player details")
 st.write("Click on a column to sort")
 st.dataframe(data=dynamic_table, width=1000, height=300)
@@ -165,16 +177,4 @@ form_trend = st.altair_chart(
     color=alt.Color('player:N', sort=list(sorted_players)),  # Specify the sorted list here
     tooltip=['player', 'total_points_sum']
 ).interactive().properties(width=1000,height=400)
-)
-
-st.subheader("Player Comparison")
-st.write("Select the X axis, Y axis and Size in the sidebar.")
-scatter_chart3 = st.altair_chart(
-        alt.Chart(dynamic_table).mark_circle(size=160).encode(
-            x=alt.X(x_axis,scale=alt.Scale(zero=False)),
-            y=y_axis,
-            color=select_colour,
-            size=size_axis,
-            tooltip=['player', 'price', 'total_points', 'total_value']
-        ).interactive().properties(width=1000,height=400)
 )
