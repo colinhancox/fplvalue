@@ -42,7 +42,7 @@ def load_player_history(element_id):
     r = requests.get(url)
     json = r.json()
     json_history_df = pd.DataFrame(json['history'])
-    week_history_df = json_history_df[['element', 'round', 'total_points']]
+    week_history_df = json_history_df[['element', 'round', 'total_points', 'defensive_contribution', 'bonus']]
     return week_history_df
 
 @st.cache_data(ttl=86400)
@@ -85,7 +85,9 @@ fh_key_players_df['total_value'] = fh_key_players_df['total_points_sum'] / fh_ke
 
 # Create dynamic_table
 dynamic_table = fh_key_players_df.groupby(['player', 'team_name', 'position', 'price']).agg({
-    'total_points': 'sum'
+    'total_points': 'sum',
+    'defensive_contribution': 'sum',
+    'bonus': 'sum'
 }).reset_index()
 dynamic_table['total_value'] = (dynamic_table['total_points'] / dynamic_table['price']).round(2)
 dynamic_table = dynamic_table.sort_values('total_points', ascending=False)
@@ -114,9 +116,9 @@ subset_df = subset_df[subset_df['player'].isin(select_player)]
 st.title('FPL Value Analysis')
 st.text('Value = Points/Price for the selected time period.')
 
-x_axis = st.sidebar.selectbox("X Axis", ('price', 'total_points', 'total_value'))
-y_axis = st.sidebar.selectbox("Y Axis", ('total_points', 'total_value', 'price'))
-size_axis = st.sidebar.selectbox("Size", ('total_value', 'total_points', 'price'))
+x_axis = st.sidebar.selectbox("X Axis", ('price', 'total_points', 'total_value', 'defensive_contribution', 'bonus'))
+y_axis = st.sidebar.selectbox("Y Axis", ('total_points', 'total_value', 'price', 'defensive_contribution', 'bonus'))
+size_axis = st.sidebar.selectbox("Size", ('total_value', 'total_points', 'price', 'defensive_contribution', 'bonus'))
 
 st.subheader("Player Comparison")
 st.write("Select the X axis, Y axis and Size in the sidebar.")
@@ -154,5 +156,15 @@ form_trend = st.altair_chart(
         y=alt.Y('total_points_sum'),
         color=alt.Color('player:N', sort=sorted_players),
         tooltip=['player', 'total_points_sum']
+    ).interactive().properties(width=1000, height=400)
+)
+
+st.subheader("Player def con by week")
+trend = st.altair_chart(
+    alt.Chart(fh_key_players_df).mark_line(point=True).encode(
+        x=alt.X('round', axis=alt.Axis(tickMinStep=1)),
+        y=alt.Y('defensive_contribution'),
+        color=alt.Color('player:N', sort=sorted_players),
+        tooltip=['player', 'defensive_contribution']
     ).interactive().properties(width=1000, height=400)
 )
