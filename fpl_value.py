@@ -1,13 +1,8 @@
-import requests
-import pandas as pd
-import numpy as np
-import altair as alt
 import streamlit as st
-import webbrowser
-import concurrent.futures
+import altair as alt
+from fpl_functions import load_data, prepare_data, filter_data
 
-url = 'https://fantasy.premierleague.com/api/bootstrap-static/'
-
+# Page configuration
 st.set_page_config(
     layout="wide",
     initial_sidebar_state="auto",
@@ -15,156 +10,161 @@ st.set_page_config(
     page_icon=None,
 )
 
+# Initialize session state for persisting filters
+if 'select_team' not in st.session_state:
+    st.session_state.select_team = []
+if 'select_position' not in st.session_state:
+    st.session_state.select_position = 'All'
+if 'add_slider' not in st.session_state:
+    st.session_state.add_slider = 0
+if 'select_colour' not in st.session_state:
+    st.session_state.select_colour = 'position'
+if 'select_player' not in st.session_state:
+    st.session_state.select_player = []
+
+# Load and prepare data (cached)
 @st.cache_data
-def load_data():
-    data = requests.get(url)
-    return data
+def get_data():
+    api_data = load_data()
+    slim_elements_df, all_history_df, elements_df = prepare_data(api_data)
+    return slim_elements_df, all_history_df
 
-data = load_data()
-json = data.json()
 
-elements_df = pd.DataFrame(json['elements'])
-elements_df = elements_df[elements_df.minutes > 0].reset_index()
-elements_types_df = pd.DataFrame(json['element_types'])
-teams_df = pd.DataFrame(json['teams'])
+slim_elements_df, all_history_df = get_data()
 
-slim_elements_df = elements_df[['id', 'first_name','second_name','team','element_type','selected_by_percent','now_cost','minutes','transfers_in','value_season','total_points', 'points_per_game']].copy()
-slim_elements_df['position'] = slim_elements_df.element_type.map(elements_types_df.set_index('id').singular_name)
-slim_elements_df['team_name'] = slim_elements_df.team.map(teams_df.set_index('id').name)
-slim_elements_df['value'] = slim_elements_df.value_season.astype(float)
-slim_elements_df['price'] = slim_elements_df.now_cost / 10
-slim_elements_df['selected_by_percent'] = slim_elements_df.selected_by_percent.astype(float)
-slim_elements_df['player'] = slim_elements_df.first_name + " " + slim_elements_df.second_name
-slim_elements_df.drop(['first_name','second_name'], axis=1, inplace=True)
+# Get unique values for filters
+team_options = sorted(slim_elements_df['team_name'].unique().tolist())
+position_options = ('All','Goalkeeper','Defender', 'Midfielder', 'Forward')
+max_week = int(all_history_df['round'].max())
 
-def load_player_history(element_id):
-    url = f'https://fantasy.premierleague.com/api/element-summary/{element_id}/'
-    r = requests.get(url)
-    json = r.json()
-    json_history_df = pd.DataFrame(json['history'])
-    week_history_df = json_history_df[['element', 'round', 'total_points', 'defensive_contribution', 'bonus']]
-    return week_history_df
-
-@st.cache_data(ttl=86400)
-def load_history():
-    with st.spinner('Retrieving player history...'):
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = [executor.submit(load_player_history, element_id) for element_id in elements_df.id]
-            all_history_df = pd.concat([future.result() for future in concurrent.futures.as_completed(futures)])
-    return all_history_df
-
-all_history_df = load_history()
-all_history_df['player'] = all_history_df.element.map(elements_df.set_index('id').first_name) + " " + all_history_df.element.map(elements_df.set_index('id').second_name)
-
-# Sidebar filters
+# Sidebar filters - use keys to auto-sync with session_state
 st.sidebar.title('Selections')
-select_team = st.sidebar.multiselect("Teams", slim_elements_df['team_name'].unique().tolist())
-select_position = st.sidebar.radio("Position", ('All','Goalkeeper','Defender', 'Midfielder', 'Forward'))
-add_slider = st.sidebar.slider("Start from week", 0, int(all_history_df['round'].max()))
-select_colour = st.sidebar.radio("Colour by", ('position', 'team_name'))
-
-# Filter slim_elements_df
-subset_df = slim_elements_df.copy()
-if select_team:
-    subset_df = subset_df[subset_df['team_name'].isin(select_team)]
-if select_position != 'All':
-    subset_df = subset_df[subset_df['position'] == select_position]
-
-# Filter history based on subset_df and week
-fh_key_players_df = all_history_df[
-    (all_history_df['element'].isin(subset_df['id'])) &
-    (all_history_df['round'] >= add_slider)
-].copy()
-
-fh_key_players_df['total_points_sum'] = fh_key_players_df.groupby('player')['total_points'].cumsum()
-fh_key_players_df = fh_key_players_df.merge(
-    slim_elements_df[['id', 'price', 'team_name', 'position']],
-    left_on='element', right_on='id', how='left'
+st.session_state.select_team = st.sidebar.multiselect(
+    "Teams", 
+    team_options,
+    default=st.session_state.select_team
 )
-fh_key_players_df['total_value'] = fh_key_players_df['total_points_sum'] / fh_key_players_df['price']
+st.session_state.select_position = st.sidebar.radio(
+    "Position", 
+    position_options,
+    index=position_options.index(st.session_state.select_position)
+)
+st.session_state.add_slider = st.sidebar.slider(
+    "Start from week", 
+    0, 
+    max_week,
+    value=st.session_state.add_slider
+)
+st.session_state.select_colour = st.sidebar.radio(
+    "Colour by", 
+    ('position', 'team_name'),
+    index=('position', 'team_name').index(st.session_state.select_colour)
+)
 
-# Create dynamic_table
-dynamic_table = fh_key_players_df.groupby(['player', 'team_name', 'position', 'price']).agg({
-    'total_points': 'sum',
-    'defensive_contribution': 'sum',
-    'bonus': 'sum'
-}).reset_index()
-dynamic_table['total_value'] = (dynamic_table['total_points'] / dynamic_table['price']).round(2)
-dynamic_table = dynamic_table.sort_values('total_points', ascending=False)
+# Filter data based on selections (cached with parameters)
+@st.cache_data
+def get_filtered_data(team_tuple, position, min_week):
+    subset_df, fh_key_players_df, dynamic_table = filter_data(
+        slim_elements_df,
+        all_history_df,
+        selected_teams=list(team_tuple) if team_tuple else None,
+        selected_position=position,
+        min_week=min_week
+    )
+    return subset_df, fh_key_players_df, dynamic_table
 
-# Filter dynamic_table by team/position again (optional)
-if select_team:
-    dynamic_table = dynamic_table[dynamic_table['team_name'].isin(select_team)]
-if select_position != 'All':
-    dynamic_table = dynamic_table[dynamic_table['position'] == select_position]
 
-# Use dynamic_table for player dropdown
-sorted_players = dynamic_table['player'].unique().tolist()
-select_player = st.sidebar.multiselect("Players", sorted_players)
+subset_df, fh_key_players_df, dynamic_table = get_filtered_data(
+    tuple(st.session_state.select_team), st.session_state.select_position, st.session_state.add_slider
+)
 
-# If no player selected, use all
-if not select_player:
-    select_player = sorted_players
+# Get all available players based on current filters
+# Sort by total_points in descending order instead of alphabetically
+available_players = (
+    dynamic_table.drop_duplicates('player')
+    .sort_values('total_points', ascending=False)
+    ['player'].tolist()
+)
 
-# Final filter on fh_key_players_df
-fh_key_players_df = fh_key_players_df[fh_key_players_df['player'].isin(select_player)]
+# Keep selected players that are still valid based on current filters
+# This ensures selections persist even when other filters change
+valid_selected = [p for p in st.session_state.select_player if p in available_players]
+st.session_state.select_player = valid_selected
 
-# Update subset_df based on selected players
-subset_df = subset_df[subset_df['player'].isin(select_player)]
+# Player selection multiselect
+st.session_state.select_player = st.sidebar.multiselect(
+    "Players", 
+    available_players,
+    default=st.session_state.select_player
+)
 
-# Charts and tables
+# Filter to selected players (use all if none selected)
+if st.session_state.select_player:
+    fh_key_players_df = fh_key_players_df[fh_key_players_df['player'].isin(st.session_state.select_player)]
+    dynamic_table = dynamic_table[dynamic_table['player'].isin(st.session_state.select_player)]
+    players_for_charts = st.session_state.select_player
+else:
+    players_for_charts = available_players
+
+# Main title and description
 st.title('FPL Value Analysis')
 st.text('Value = Points/Price for the selected time period.')
 
+# Chart configuration
 x_axis = st.sidebar.selectbox("X Axis", ('price', 'total_points', 'total_value', 'defensive_contribution', 'bonus'))
 y_axis = st.sidebar.selectbox("Y Axis", ('total_points', 'total_value', 'price', 'defensive_contribution', 'bonus'))
 size_axis = st.sidebar.selectbox("Size", ('total_value', 'total_points', 'price', 'defensive_contribution', 'bonus'))
 
+# Player Comparison Chart
 st.subheader("Player Comparison")
 st.write("Select the X axis, Y axis and Size in the sidebar.")
-scatter_chart3 = st.altair_chart(
+st.altair_chart(
     alt.Chart(dynamic_table).mark_circle(size=160).encode(
         x=alt.X(x_axis, scale=alt.Scale(zero=False)),
         y=y_axis,
-        color=select_colour,
+        color=st.session_state.select_colour,
         size=size_axis,
         tooltip=['player', 'price', 'total_points', 'total_value']
     ).interactive().properties(width=1000, height=400)
 )
 
+# Player details table
 st.subheader("Player details")
 st.write("Click on a column to sort")
-st.dataframe(data=dynamic_table, width=1000, height=300)
+st.dataframe(data=dynamic_table, width=1000, height=300, use_container_width=True)
 
 # Sort for trend charts
-fh_key_players_df = fh_key_players_df.sort_values('total_points', ascending=False)
+fh_key_players_df_sorted = fh_key_players_df.sort_values('round')
 
+# Player performance by week
 st.subheader("Player performance by week")
-trend = st.altair_chart(
-    alt.Chart(fh_key_players_df).mark_line(point=True).encode(
+st.altair_chart(
+    alt.Chart(fh_key_players_df_sorted).mark_line(point=True).encode(
         x=alt.X('round', axis=alt.Axis(tickMinStep=1)),
         y=alt.Y('total_points'),
-        color=alt.Color('player:N', sort=sorted_players),
-        tooltip=['player', 'total_points']
+        color=alt.Color('player:N', sort=players_for_charts),
+        tooltip=['player', 'round', 'total_points']
     ).interactive().properties(width=1000, height=400)
 )
 
-st.subheader("Accummulated player performance")
-form_trend = st.altair_chart(
-    alt.Chart(fh_key_players_df).mark_line(point=True).encode(
+# Accumulated player performance
+st.subheader("Accumulated player performance")
+st.altair_chart(
+    alt.Chart(fh_key_players_df_sorted).mark_line(point=True).encode(
         x=alt.X('round', axis=alt.Axis(tickMinStep=1)),
         y=alt.Y('total_points_sum'),
-        color=alt.Color('player:N', sort=sorted_players),
-        tooltip=['player', 'total_points_sum']
+        color=alt.Color('player:N', sort=players_for_charts),
+        tooltip=['player', 'round', 'total_points_sum']
     ).interactive().properties(width=1000, height=400)
 )
 
+# Player defensive contribution by week
 st.subheader("Player def con by week")
-trend = st.altair_chart(
-    alt.Chart(fh_key_players_df).mark_line(point=True).encode(
+st.altair_chart(
+    alt.Chart(fh_key_players_df_sorted).mark_line(point=True).encode(
         x=alt.X('round', axis=alt.Axis(tickMinStep=1)),
         y=alt.Y('defensive_contribution'),
-        color=alt.Color('player:N', sort=sorted_players),
-        tooltip=['player', 'defensive_contribution']
+        color=alt.Color('player:N', sort=players_for_charts),
+        tooltip=['player', 'round', 'defensive_contribution']
     ).interactive().properties(width=1000, height=400)
 )
